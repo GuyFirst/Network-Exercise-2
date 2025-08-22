@@ -1,144 +1,236 @@
 #define _CRT_SECURE_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+
 #include <iostream>
+#include <string>
+#include <map>
+#include <ctime>
+#include <cstdio>
 using namespace std;
+
 #pragma comment(lib, "Ws2_32.lib")
 #include <winsock2.h>
-#include <string.h>
-#include <time.h>
+#include <windows.h>
 
-#define TIME_PORT	27015
+#define TIME_PORT 27015
 
-void main()
-{
-	// Initialize Winsock (Windows Sockets).
+enum RequestCode : unsigned char {
+    GET_TIME = 1,
+    GET_TIME_NO_DATE,
+    GET_TIME_SINCE_EPOCH,
+    GET_C2S_DELAY_EST,      // 4
+    MEASURE_RTT,            // 5
+    GET_TIME_NO_SECONDS,    // 6
+    GET_YEAR,               // 7
+    GET_MONTH_AND_DAY,      // 8
+    GET_SECONDS_SINCE_MONTH_START, // 9
+    GET_WEEK_OF_YEAR,       // 10
+    GET_DST_FLAG,           // 11
+    GET_TIME_IN_CITY,       // 12
+    MEASURE_TIMELAP         // 13
+};
 
-	WSAData wsaData;
+struct LapState {
+    DWORD startTick = 0;
+    bool active = false;
+};
 
-	// Call WSAStartup and return its value as an integer and check for errors.
-	// The WSAStartup function initiates the use of WS2_32.DLL by a process.
-	// First parameter is the version number 2.2.
-	// The WSACleanup function destructs the use of WS2_32.DLL by a process.
-	if (NO_ERROR != WSAStartup(MAKEWORD(2, 2), &wsaData))
-	{
-		cout << "Time Server: Error at WSAStartup()\n";
-		return;
-	}
+static string addrKey(const sockaddr_in& a) {
+    char ip[16]{};
+    strcpy(ip, inet_ntoa(a.sin_addr));
+    return string(ip) + ":" + to_string(ntohs(a.sin_port));
+}
 
-	// Server side:
-	// Create and bind a socket to an internet address.
+static void tm_now_local(tm& out) {
+    time_t now = time(nullptr);
+    tm* p = localtime(&now);
+    out = *p;
+}
 
-	// After initialization, a SOCKET object is ready to be instantiated.
+static string time_fmt_local(const char* fmt) {
+    tm t{};
+    tm_now_local(t);
+    char buf[64];
+    strftime(buf, sizeof(buf), fmt, &t);
+    return string(buf);
+}
 
-	// Create a SOCKET object called m_socket. 
-	// For this application:	use the Internet address family (AF_INET), 
-	//							datagram sockets (SOCK_DGRAM), 
-	//							and the UDP/IP protocol (IPPROTO_UDP).
-	SOCKET m_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+static string seconds_since_epoch() {
+    time_t now = time(nullptr);
+    return to_string((long long)now);
+}
 
-	// Check for errors to ensure that the socket is a valid socket.
-	// Error detection is a key part of successful networking code. 
-	// If the socket call fails, it returns INVALID_SOCKET. 
-	// The "if" statement in the previous code is used to catch any errors that
-	// may have occurred while creating the socket. WSAGetLastError returns an 
-	// error number associated with the last error that occurred.
-	if (INVALID_SOCKET == m_socket)
-	{
-		cout << "Time Server: Error at socket(): " << WSAGetLastError() << endl;
-		WSACleanup();
-		return;
-	}
+static string seconds_since_month_start() {
+    time_t now = time(nullptr);
+    tm lt = *localtime(&now);
+    tm m0 = lt;
+    m0.tm_mday = 1;
+    m0.tm_hour = 0;
+    m0.tm_min = 0;
+    m0.tm_sec = 0;
+    time_t t0 = mktime(&m0);
+    double diff = difftime(now, t0);
+    return to_string((long long)diff);
+}
 
-	// For a server to communicate on a network, it must first bind the socket to 
-	// a network address.
+static string week_of_year_simple() {
+    time_t now = time(nullptr);
+    tm lt = *localtime(&now);
+    int week = (lt.tm_yday / 7) + 1; 
+    return to_string(week);
+}
 
-	// Need to assemble the required data for connection in sockaddr structure.
+static string dst_flag() {
+    tm lt{};
+    tm_now_local(lt);
+    return (lt.tm_isdst > 0) ? "1" : "0";
+}
 
-	// Create a sockaddr_in object called serverService. 
-	sockaddr_in serverService;
-	// Address family (must be AF_INET - Internet address family).
-	serverService.sin_family = AF_INET;
-	// IP address. The sin_addr is a union (s_addr is a unsigdned long (4 bytes) data type).
-	// INADDR_ANY means to listen on all interfaces.
-	// inet_addr (Internet address) is used to convert a string (char *) into unsigned int.
-	// inet_ntoa (Internet address) is the reverse function (converts unsigned int to char *)
-	// The IP address 127.0.0.1 is the host itself, it's actually a loop-back.
-	serverService.sin_addr.s_addr = INADDR_ANY;	//inet_addr("127.0.0.1");
-	// IP Port. The htons (host to network - short) function converts an
-	// unsigned short from host to TCP/IP network byte order (which is big-endian).
-	serverService.sin_port = htons(TIME_PORT);
+static string time_in_city(const string& cityRaw) {
+    
+    string city = cityRaw;
+    for (auto& c : city) c = (char)tolower((unsigned char)c);
 
-	// Bind the socket for client's requests.
+    int offsetHours = INT32_MIN;
+    if (city == "doha") offsetHours = 3;
+    else if (city == "prague") offsetHours = 1;
+    else if (city == "berlin") offsetHours = 1;
+    else if (city == "new york"|| city == "nyc") offsetHours = -5;
 
-	// The bind function establishes a connection to a specified socket.
-	// The function uses the socket handler, the sockaddr structure (which
-	// defines properties of the desired connection) and the length of the
-	// sockaddr structure (in bytes).
-	if (SOCKET_ERROR == bind(m_socket, (SOCKADDR*)&serverService, sizeof(serverService)))
-	{
-		cout << "Time Server: Error at bind(): " << WSAGetLastError() << endl;
-		closesocket(m_socket);
-		WSACleanup();
-		return;
-	}
+    time_t now = time(nullptr);
+    if (offsetHours == INT32_MIN) {
+       
+        tm* g = gmtime(&now);
+        char buf[64];
+        strftime(buf, sizeof(buf), "%H:%M:%S (UTC)", g);
+        return string("City not supported; showing UTC: ") + buf;
+    }
 
-	// Waits for incoming requests from clients.
+    time_t city_time = now + offsetHours * 3600;
+    tm* tt = gmtime(&city_time);
+    char buf[64];
+    strftime(buf, sizeof(buf), "%H:%M:%S", tt);
+    return string(buf);
+}
 
-	// Send and receive data.
-	sockaddr client_addr;
-	int client_addr_len = sizeof(client_addr);
-	int bytesSent = 0;
-	int bytesRecv = 0;
-	char sendBuff[255];
-	char recvBuff[255];
+int main() {
+    WSAData wsaData;
+    if (NO_ERROR != WSAStartup(MAKEWORD(2, 2), &wsaData)) {
+        cout << "Time Server: Error at WSAStartup()\n";
+        return 1;
+    }
 
-	// Get client's requests and answer them.
-	// The recvfrom function receives a datagram and stores the source address.
-	// The buffer for data to be received and its available size are 
-	// returned by recvfrom. The fourth argument is an idicator 
-	// specifying the way in which the call is made (0 for default).
-	// The two last arguments are optional and will hold the details of the client for further communication. 
-	// NOTE: the last argument should always be the actual size of the client's data-structure (i.e. sizeof(sockaddr)).
-	cout << "Time Server: Wait for clients' requests.\n";
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) {
+        cout << "Time Server: Error at socket(): " << WSAGetLastError() << endl;
+        WSACleanup();
+        return 1;
+    }
 
-	while (true)
-	{
-		bytesRecv = recvfrom(m_socket, recvBuff, 255, 0, &client_addr, &client_addr_len);
-		if (SOCKET_ERROR == bytesRecv)
-		{
-			cout << "Time Server: Error at recvfrom(): " << WSAGetLastError() << endl;
-			closesocket(m_socket);
-			WSACleanup();
-			return;
-		}
+    sockaddr_in server{};
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(TIME_PORT);
 
-		recvBuff[bytesRecv] = '\0'; //add the null-terminating to make it a string
-		cout << "Time Server: Recieved: " << bytesRecv << " bytes of \"" << recvBuff << "\" message.\n";
+    if (SOCKET_ERROR == bind(s, (SOCKADDR*)&server, sizeof(server))) {
+        cout << "Time Server: Error at bind(): " << WSAGetLastError() << endl;
+        closesocket(s);
+        WSACleanup();
+        return 1;
+    }
 
-		// Answer client's request by the current time.
+    cout << "Time Server: Wait for clients' requests.\n";
 
-		// Get the current time.
-		time_t timer;
-		time(&timer);
-		// Parse the current time to printable string.
-		strcpy(sendBuff, ctime(&timer));
-		sendBuff[strlen(sendBuff) - 1] = '\0'; //to remove the new-line from the created string
+    map<string, LapState> laps;
 
-		// Sends the answer to the client, using the client address gathered
-		// by recvfrom. 
-		bytesSent = sendto(m_socket, sendBuff, (int)strlen(sendBuff), 0, (const sockaddr*)&client_addr, client_addr_len);
-		if (SOCKET_ERROR == bytesSent)
-		{
-			cout << "Time Server: Error at sendto(): " << WSAGetLastError() << endl;
-			closesocket(m_socket);
-			WSACleanup();
-			return;
-		}
+    while (true) {
+        sockaddr_in client{};
+        int clen = sizeof(client);
+        char recvBuf[512];
+        int n = recvfrom(s, recvBuf, sizeof(recvBuf), 0, (sockaddr*)&client, &clen);
+        if (n == SOCKET_ERROR) {
+            cout << "Time Server: Error at recvfrom(): " << WSAGetLastError() << endl;
+            break;
+        }
+        if (n < 2) {
+    
+            continue;
+        }
 
-		cout << "Time Server: Sent: " << bytesSent << "\\" << strlen(sendBuff) << " bytes of \"" << sendBuff << "\" message.\n";
-	}
+        unsigned char code = (unsigned char)recvBuf[0];
+        unsigned char len = (unsigned char)recvBuf[1];
+        string payload;
+        if (len > 0) {
+            if (2 + len > n) len = (unsigned char)max(0, n - 2);
+            payload.assign(&recvBuf[2], &recvBuf[2 + len]);
+        }
 
-	// Closing connections and Winsock.
-	cout << "Time Server: Closing Connection.\n";
-	closesocket(m_socket);
-	WSACleanup();
+        auto& lap = laps[addrKey(client)];
+        if (lap.active && (GetTickCount() - lap.startTick >= 180000)) {
+            lap.active = false; 
+        }
+
+        string reply;
+        switch (code) {
+        case GET_TIME:
+            reply = time_fmt_local("%Y-%m-%d %H:%M:%S");
+            break;
+        case GET_TIME_NO_DATE:
+            reply = time_fmt_local("%H:%M:%S");
+            break;
+        case GET_TIME_SINCE_EPOCH:
+            reply = seconds_since_epoch();
+            break;
+        case GET_C2S_DELAY_EST:
+            reply = to_string((unsigned long long)GetTickCount());
+            break;
+        case MEASURE_RTT:
+        
+            reply = to_string((unsigned long long)GetTickCount());
+            break;
+        case GET_TIME_NO_SECONDS:
+            reply = time_fmt_local("%H:%M");
+            break;
+        case GET_YEAR:
+            reply = time_fmt_local("%Y");
+            break;
+        case GET_MONTH_AND_DAY:
+            reply = time_fmt_local("%m %d");
+            break;
+        case GET_SECONDS_SINCE_MONTH_START:
+            reply = seconds_since_month_start();
+            break;
+        case GET_WEEK_OF_YEAR:
+            reply = week_of_year_simple();
+            break;
+        case GET_DST_FLAG:
+            reply = dst_flag();
+            break;
+        case GET_TIME_IN_CITY:
+            reply = time_in_city(payload);
+            break;
+        case MEASURE_TIMELAP:
+            if (!lap.active) {
+                lap.active = true;
+                lap.startTick = GetTickCount();
+                reply = "TimeLap started";
+            }
+            else {
+                DWORD dt = GetTickCount() - lap.startTick;
+                lap.active = false;
+                reply = string("TimeLap: ") + to_string((unsigned long long)dt) + " ms";
+            }
+            break;
+        default:
+            reply = "Unknown code";
+            break;
+        }
+
+        sendto(s, reply.c_str(), (int)reply.size(), 0, (sockaddr*)&client, clen);
+    }
+
+    closesocket(s);
+    WSACleanup();
+    return 0;
 }

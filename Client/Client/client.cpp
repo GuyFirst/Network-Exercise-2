@@ -1,3 +1,4 @@
+
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <iostream>
@@ -67,7 +68,6 @@ static void printMenu() {
 }
 
 int main() {
-    // Winsock startup
     WSAData wsaData;
     if (NO_ERROR != WSAStartup(MAKEWORD(2, 2), &wsaData)) {
         cout << "Time Client: Error at WSAStartup()\n";
@@ -92,8 +92,6 @@ int main() {
         return 1;
     }
 
-    int rcvTimeoutMs = 5000;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&rcvTimeoutMs, sizeof(rcvTimeoutMs));
 
     while (true) {
         printMenu();
@@ -125,7 +123,6 @@ int main() {
         }
         case GET_C2S_DELAY_EST:
         {
-           
             const int N = 100;
             for (int i = 0; i < N; ++i) {
                 if (sendReq(s, GET_C2S_DELAY_EST, "") == SOCKET_ERROR) {
@@ -139,7 +136,6 @@ int main() {
                 ticks.push_back(strtoull(reply.c_str(), nullptr, 10));
             }
             if (ticks.size() >= 2) {
-               
                 unsigned long long sum = 0;
                 for (size_t i = 1; i < ticks.size(); ++i) sum += (ticks[i] - ticks[i - 1]);
                 double avg = (double)sum / (double)(ticks.size() - 1);
@@ -153,33 +149,43 @@ int main() {
         case MEASURE_RTT:
         {
             const int N = 100;
-            unsigned long long sum = 0;
-            int ok = 0;
+            vector<double> samples;
+            samples.reserve(N);
+
             for (int i = 0; i < N; ++i) {
                 DWORD t0 = GetTickCount();
+                Sleep(1);
                 if (sendReq(s, MEASURE_RTT, "") == SOCKET_ERROR) {
-                    cout << "send error: " << WSAGetLastError() << "\n";
+                    cout << "send error at " << i << ": " << WSAGetLastError() << "\n";
                     break;
                 }
+
+                string reply;
                 if (recvStr(s, reply) <= 0) {
                     cout << "recv timeout/error at " << i << "\n";
                     break;
                 }
+
                 DWORD t1 = GetTickCount();
-                sum += (t1 - t0);
-                ok++;
+                DWORD rtt = t1 - t0;
+                samples.push_back((double)rtt);
             }
-            if (ok > 0) {
-                double avg = (double)sum / (double)ok;
-                cout << "Average RTT over " << ok << " pairs: " << avg << " ms\n";
+
+            if (!samples.empty()) {
+                double sum = 0;
+                for (double ms : samples) sum += ms;
+                double avg = sum / samples.size();
+                cout << "Average RTT over " << samples.size() << " request/response pairs: " << avg << " ms\n";
+            }
+            else {
+                cout << "No RTT samples collected.\n";
             }
             break;
         }
         case GET_TIME_IN_CITY:
         {
-            string payload;
             cout << "Enter city (Doha / Prague / New York / Berlin, others -> UTC): ";
-            getline(std::cin >> std::ws, payload);  
+            getline(std::cin >> std::ws, payload);
 
             if (sendReq(s, GET_TIME_IN_CITY, payload) == SOCKET_ERROR) {
                 cout << "send error: " << WSAGetLastError() << "\n";
@@ -194,7 +200,7 @@ int main() {
             cout << ">> " << reply << "\n";
             break;
         }
-    fault:
+        default:
             cout << "Unknown choice.\n";
             break;
         }

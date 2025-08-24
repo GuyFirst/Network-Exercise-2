@@ -18,16 +18,16 @@ enum RequestCode : unsigned char {
     GET_TIME = 1,
     GET_TIME_NO_DATE,
     GET_TIME_SINCE_EPOCH,
-    GET_C2S_DELAY_EST,      // 4
-    MEASURE_RTT,            // 5
-    GET_TIME_NO_SECONDS,    // 6
-    GET_YEAR,               // 7
-    GET_MONTH_AND_DAY,      // 8
-    GET_SECONDS_SINCE_MONTH_START, // 9
-    GET_WEEK_OF_YEAR,       // 10
-    GET_DST_FLAG,           // 11
-    GET_TIME_IN_CITY,       // 12
-    MEASURE_TIMELAP         // 13
+    GET_C2S_DELAY_EST,
+    MEASURE_RTT,
+    GET_TIME_NO_SECONDS,
+    GET_YEAR,
+    GET_MONTH_AND_DAY,
+    GET_SECONDS_SINCE_MONTH_START,
+    GET_WEEK_OF_YEAR,
+    GET_DST_FLAG,
+    GET_TIME_IN_CITY,
+    MEASURE_TIMELAP
 };
 
 static int sendReq(SOCKET s, unsigned char code, const string& payload) {
@@ -70,28 +70,27 @@ static void printMenu() {
 int main() {
     WSAData wsaData;
     if (NO_ERROR != WSAStartup(MAKEWORD(2, 2), &wsaData)) {
-        cout << "Time Client: Error at WSAStartup()\n";
+        cout << "Error at WSAStartup()\n";
         return 1;
     }
 
     SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) {
-        cout << "Time Client: Error at socket(): " << WSAGetLastError() << endl;
+        cout << "Error at socket(): " << WSAGetLastError() << endl;
         WSACleanup();
         return 1;
     }
 
     sockaddr_in server{};
     server.sin_family = AF_INET;
-    server.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server.sin_addr.s_addr = inet_addr("10.100.102.7");
     server.sin_port = htons(TIME_PORT);
     if (connect(s, (sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
-        cout << "Time Client: Error at connect(): " << WSAGetLastError() << endl;
+        cout << "Error at connect(): " << WSAGetLastError() << endl;
         closesocket(s);
         WSACleanup();
         return 1;
     }
-
 
     while (true) {
         printMenu();
@@ -100,7 +99,6 @@ int main() {
         if (choice == 99) break;
 
         string payload, reply;
-        int sent = 0, recvd = 0;
 
         switch (choice) {
         case GET_TIME:
@@ -113,33 +111,39 @@ int main() {
         case GET_WEEK_OF_YEAR:
         case GET_DST_FLAG:
         case MEASURE_TIMELAP:
-        {
-            sent = sendReq(s, (unsigned char)choice, "");
-            if (sent == SOCKET_ERROR) { cout << "send error: " << WSAGetLastError() << "\n"; break; }
-            recvd = recvStr(s, reply);
-            if (recvd <= 0) { cout << "recv timeout/error\n"; break; }
+            if (sendReq(s, (unsigned char)choice, "") == SOCKET_ERROR) break;
+            if (recvStr(s, reply) <= 0) break;
             cout << ">> " << reply << "\n";
             break;
-        }
+
         case GET_C2S_DELAY_EST:
         {
             const int N = 100;
+            vector<DWORD> serverTicks;
+            serverTicks.reserve(N);
+
             for (int i = 0; i < N; ++i) {
                 if (sendReq(s, GET_C2S_DELAY_EST, "") == SOCKET_ERROR) {
-                    cout << "send error: " << WSAGetLastError() << "\n";
+                    cout << "send error\n";
                     break;
                 }
+
+                string reply;
+                if (recvStr(s, reply) <= 0) {
+                    cout << "recv error at " << i << "\n";
+                    break;
+                }
+
+                DWORD serverTick = (DWORD)strtoul(reply.c_str(), nullptr, 10);
+                serverTicks.push_back(serverTick);
             }
-            vector<unsigned long long> ticks; ticks.reserve(N);
-            for (int i = 0; i < N; ++i) {
-                if (recvStr(s, reply) <= 0) { cout << "recv timeout/error at " << i << "\n"; break; }
-                ticks.push_back(strtoull(reply.c_str(), nullptr, 10));
-            }
-            if (ticks.size() >= 2) {
-                unsigned long long sum = 0;
-                for (size_t i = 1; i < ticks.size(); ++i) sum += (ticks[i] - ticks[i - 1]);
-                double avg = (double)sum / (double)(ticks.size() - 1);
-                cout << "Estimated avg client->server spacing (ms, server-observed): " << avg << "\n";
+
+            if (serverTicks.size() >= 2) {
+                DWORD sum = 0;
+                for (size_t i = 1; i < serverTicks.size(); ++i)
+                    sum += (serverTicks[i] - serverTicks[i - 1]);
+                double avg = (double)sum / (double)(serverTicks.size() - 1);
+                cout << "Estimated avg client->server spacing (ms, server-side measured): " << avg << " ms\n";
             }
             else {
                 cout << "Not enough samples.\n";
@@ -151,55 +155,27 @@ int main() {
             const int N = 100;
             vector<double> samples;
             samples.reserve(N);
-
             for (int i = 0; i < N; ++i) {
                 DWORD t0 = GetTickCount();
-                Sleep(1);
-                if (sendReq(s, MEASURE_RTT, "") == SOCKET_ERROR) {
-                    cout << "send error at " << i << ": " << WSAGetLastError() << "\n";
-                    break;
-                }
-
-                string reply;
-                if (recvStr(s, reply) <= 0) {
-                    cout << "recv timeout/error at " << i << "\n";
-                    break;
-                }
-
+                if (sendReq(s, MEASURE_RTT, "") == SOCKET_ERROR) break;
+                if (recvStr(s, reply) <= 0) break;
                 DWORD t1 = GetTickCount();
-                DWORD rtt = t1 - t0;
-                samples.push_back((double)rtt);
+                samples.push_back((double)(t1 - t0));
             }
-
             if (!samples.empty()) {
                 double sum = 0;
-                for (double ms : samples) sum += ms;
-                double avg = sum / samples.size();
-                cout << "Average RTT over " << samples.size() << " request/response pairs: " << avg << " ms\n";
-            }
-            else {
-                cout << "No RTT samples collected.\n";
+                for (double x : samples) sum += x;
+                cout << "Average RTT: " << (sum / samples.size()) << " ms\n";
             }
             break;
         }
         case GET_TIME_IN_CITY:
-        {
-            cout << "Enter city (Doha / Prague / New York / Berlin, others -> UTC): ";
-            getline(std::cin >> std::ws, payload);
-
-            if (sendReq(s, GET_TIME_IN_CITY, payload) == SOCKET_ERROR) {
-                cout << "send error: " << WSAGetLastError() << "\n";
-                break;
-            }
-
-            int recvd = recvStr(s, reply);
-            if (recvd <= 0) {
-                cout << "recv timeout/error\n";
-                break;
-            }
+            cout << "Enter city: ";
+            getline(cin >> ws, payload);
+            if (sendReq(s, GET_TIME_IN_CITY, payload) == SOCKET_ERROR) break;
+            if (recvStr(s, reply) <= 0) break;
             cout << ">> " << reply << "\n";
             break;
-        }
         default:
             cout << "Unknown choice.\n";
             break;

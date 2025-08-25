@@ -64,20 +64,25 @@ static string seconds_since_epoch() {
 static string seconds_since_month_start() {
     time_t now = time(nullptr);
     tm lt = *localtime(&now);
+    // convert 'now' (epoch seconds) into calendar fields (year, month, day, etc.)
+    // localtime is needed so we can modify the date (set day=1, time=00:00:00)
     tm m0 = lt;
     m0.tm_mday = 1;
     m0.tm_hour = 0;
     m0.tm_min = 0;
     m0.tm_sec = 0;
     time_t t0 = mktime(&m0);
+    // and then use mktime() to rebuild a valid timestamp for the start of this month
     double diff = difftime(now, t0);
     return to_string((long long)diff);
 }
 
-static string week_of_year_simple() {
+static string week_of_year() {
     time_t now = time(nullptr);
     tm lt = *localtime(&now);
-    int week = (lt.tm_yday / 7) + 1; 
+    int week = (lt.tm_yday / 7) + 1;
+    // localtime breaks 'now' into calendar fields, including tm_yday (day of year)
+    // by dividing tm_yday by 7 we estimate which week number it is in the year
     return to_string(week);
 }
 
@@ -88,7 +93,7 @@ static string dst_flag() {
 }
 
 static string time_in_city(const string& cityRaw) {
-    
+
     string city = cityRaw;
     for (auto& c : city) c = (char)tolower((unsigned char)c);
 
@@ -96,11 +101,11 @@ static string time_in_city(const string& cityRaw) {
     if (city == "doha") offsetHours = 3;
     else if (city == "prague") offsetHours = 1;
     else if (city == "berlin") offsetHours = 1;
-    else if (city == "new york"|| city == "nyc") offsetHours = -5;
+    else if (city == "new york" || city == "nyc") offsetHours = -5;
 
     time_t now = time(nullptr);
     if (offsetHours == INT32_MIN) {
-       
+
         tm* g = gmtime(&now);
         char buf[64];
         strftime(buf, sizeof(buf), "%H:%M:%S (UTC)", g);
@@ -154,7 +159,7 @@ int main() {
             break;
         }
         if (n < 2) {
-    
+
             continue;
         }
 
@@ -168,7 +173,7 @@ int main() {
 
         auto& lap = laps[addrKey(client)];
         if (lap.active && (GetTickCount() - lap.startTick >= 180000)) {
-            lap.active = false; 
+            lap.active = false;
         }
 
         string reply;
@@ -186,7 +191,7 @@ int main() {
             reply = to_string((unsigned long long)GetTickCount());
             break;
         case MEASURE_RTT:
-        
+
             reply = to_string((unsigned long long)GetTickCount());
             break;
         case GET_TIME_NO_SECONDS:
@@ -202,7 +207,7 @@ int main() {
             reply = seconds_since_month_start();
             break;
         case GET_WEEK_OF_YEAR:
-            reply = week_of_year_simple();
+            reply = week_of_year();
             break;
         case GET_DST_FLAG:
             reply = dst_flag();

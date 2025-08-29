@@ -83,7 +83,7 @@ int main() {
 
     sockaddr_in server{};
     server.sin_family = AF_INET;
-    server.sin_addr.s_addr = inet_addr("10.100.102.7");
+    server.sin_addr.s_addr = inet_addr("127.0.0.1");
     server.sin_port = htons(TIME_PORT);
     if (connect(s, (sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
         cout << "Error at connect(): " << WSAGetLastError() << endl;
